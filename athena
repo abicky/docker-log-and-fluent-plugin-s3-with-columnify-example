@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+require 'aws-sdk-athena'
+
+RESULT_CONFIGURATION = {
+  output_location: ENV['ATHENA_OUTPUT_LOCATION'],
+}
+
+def wait_until_execution_complete(client, params)
+  query_execution = nil
+  loop do
+    query_execution = client.get_query_execution(params).query_execution
+    state = query_execution.status.state
+    break if state == 'FAILED' || state == 'SUCCEEDED'
+    sleep 1
+  end
+
+  query_execution
+end
+
+client = Aws::Athena::Client.new
+query = ARGV[0]
+unless query
+  puts "usage: #{File.basename(__FILE__)} <query>"
+  exit 1
+end
+query = $stdin.read if query == '-'
+
+puts "Executing query...\n#{query}\n\n"
+
+resp = client.start_query_execution(
+  query_string: query,
+  result_configuration: RESULT_CONFIGURATION,
+)
+
+query_execution = wait_until_execution_complete(client, query_execution_id: resp.query_execution_id)
+
+if query_execution.status.state == 'FAILED'
+  $stderr.puts query_execution.status.state_change_reason
+  exit 1
+end
+
+puts 'Result:'
+resp = client.get_query_results(query_execution_id: resp.query_execution_id)
+resp.result_set.rows.each do |row|
+  puts row.data.map(&:var_char_value).join(' | ')
+end
+
+puts ''
+puts 'Statistics:'
+puts JSON.pretty_generate(query_execution.statistics.to_h)

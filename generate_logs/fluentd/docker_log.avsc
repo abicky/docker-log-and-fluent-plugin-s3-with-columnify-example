@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "DockerLog",
+  "fields" : [
+    {"name": "log_time",       "type": "long"},
+    {"name": "container_id",   "type": "string"},
+    {"name": "container_name", "type": "string"},
+    {"name": "source",         "type": "string"},
+    {"name": "log",            "type": "string"}
+  ]
+}

@@ -1,0 +1,13 @@
+version: '3.7'
+services:
+  fluentd:
+    build:
+      context: ./fluentd
+    env_file:
+      ./fluentd/fluentd.env
+
+  logger:
+    build:
+      context: ./logger
+    environment:
+      FLUENTD_HOST: fluentd

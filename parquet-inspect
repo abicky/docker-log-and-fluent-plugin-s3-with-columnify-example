@@ -1,0 +1,65 @@
+#!/usr/bin/env python
+import os
+import sys
+import inspect
+from datetime import date, datetime, timezone, timedelta
+
+import numpy as np
+from fastparquet import ParquetFile
+from fastparquet import parquet_thrift
+
+if len(sys.argv) != 2:
+    print('usage: {} FILE'.format(os.path.basename(__file__)))
+    sys.exit(1)
+
+def datetime_from_int96(value):
+    # cf. https://github.com/apache/parquet-mr/blob/e3b95020f777eb5e0651977f654c1662e3ea1f29/parquet-column/src/main/java/org/apache/parquet/example/data/simple/NanoTime.java#L40-L48
+    time_of_day_nanos = int.from_bytes(value[0:8], 'little')
+    julian_day = int.from_bytes(value[8:-1], 'little')
+    # cf. fastparquet.converted_types.convert
+    return datetime.fromtimestamp((julian_day - 2440588) * 86400 + time_of_day_nanos * 1e-9, timezone.utc)
+
+pf = ParquetFile(os.path.abspath(sys.argv[1]))
+schema_elements = pf.schema.schema_elements[1:]
+for i, row_group in enumerate(pf.row_groups):
+    cols = row_group.columns
+    total_compressed_size = sum(map(lambda x: x.meta_data.total_compressed_size, cols))
+    print('''row group {}:
+  offset: {}
+  total_compressed_byte_size:   {:12d}
+  total_uncompressed_byte_size: {:12d}
+  rows: {}
+  sorting_columns: {}
+    '''.format(i, cols[0].file_offset, total_compressed_size, row_group.total_byte_size, row_group.num_rows, row_group.sorting_columns))
+    for i, col in enumerate(cols):
+        min_value = col.meta_data.statistics.min
+        max_value = col.meta_data.statistics.max
+        converted_type = schema_elements[i].converted_type
+        if converted_type == parquet_thrift.ConvertedType.DATE:
+            min_value = date(1970, 1, 1) + timedelta(days=int.from_bytes(min_value, 'little'))
+            max_value = date(1970, 1, 1) + timedelta(days=int.from_bytes(max_value, 'little'))
+        elif converted_type == parquet_thrift.ConvertedType.TIMESTAMP_MILLIS:
+            min_value = datetime.fromtimestamp(int.from_bytes(min_value, 'little') / 1e3, timezone.utc)
+            max_value = datetime.fromtimestamp(int.from_bytes(max_value, 'little') / 1e3, timezone.utc)
+        elif converted_type == parquet_thrift.ConvertedType.TIMESTAMP_MICROS:
+            min_value = datetime.fromtimestamp(int.from_bytes(min_value, 'little') / 1e6, timezone.utc)
+            max_value = datetime.fromtimestamp(int.from_bytes(max_value, 'little') / 1e6, timezone.utc)
+        elif col.meta_data.type == parquet_thrift.Type.INT32 or col.meta_data.type == parquet_thrift.Type.INT64:
+            min_value = int.from_bytes(min_value, 'little')
+            max_value = int.from_bytes(max_value, 'little')
+        elif col.meta_data.type == parquet_thrift.Type.INT96:
+            # Sorted by Binary.compareTwoByteArrays (ByteArrayBackedBinary#compareTo)
+            min_value = '{} ({})'.format(datetime_from_int96(min_value), ' '.join(['{:02x}'.format(b) for b in min_value]))
+            max_value = '{} ({})'.format(datetime_from_int96(max_value), ' '.join(['{:02x}'.format(b) for b in max_value]))
+        elif col.meta_data.type == parquet_thrift.Type.BYTE_ARRAY:
+            if min_value is not None:
+                min_value = min_value.decode('utf-8')
+            if max_value is not None:
+                max_value = max_value.decode('utf-8')
+
+        print('    path: {}'.format(col.meta_data.path_in_schema))
+        print('    min: {}'.format(min_value))
+        print('    max: {}'.format(max_value))
+        print('    total_compressed_size:   {:10d}'.format(col.meta_data.total_compressed_size))
+        print('    total_uncompressed_size: {:10d}'.format(col.meta_data.total_uncompressed_size))
+        print('')

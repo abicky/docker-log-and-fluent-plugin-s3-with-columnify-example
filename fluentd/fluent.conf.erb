@@ -1,0 +1,94 @@
+<source>
+  @type  forward
+  @label @mainstream
+  port  24224
+</source>
+
+<label @mainstream>
+  <filter docker.**>
+    @type record_transformer
+    enable_ruby
+    remove_keys FLUENTD_STDOUT_FILTER_PATTERN
+
+    <record>
+      filter_stdout ${record['source'] == 'stdout' && record['FLUENTD_STDOUT_FILTER_PATTERN'] && record['log'].match?(record['FLUENTD_STDOUT_FILTER_PATTERN'])}
+    </record>
+  </filter>
+
+  <match docker.**>
+    @type copy
+    <store>
+      @type relabel
+      @label @stdout
+    </store>
+    <store>
+      @type relabel
+      @label @s3
+    </store>
+  </match>
+</label>
+
+<label @stdout>
+  <filter docker.**>
+    @type grep
+    <exclude>
+      key filter_stdout
+      pattern /\Atrue\z/
+    </exclude>
+  </filter>
+
+  <filter docker.**>
+    @type record_transformer
+    remove_keys filter_stdout
+  </filter>
+
+  <match docker.**>
+    @type stdout
+  </match>
+</label>
+
+<label @s3>
+  <filter docker.**>
+    @type record_transformer
+    enable_ruby
+    remove_keys filter_stdout
+
+    <record>
+      log_time ${(time.to_r.truncate(3) * 1000).to_i}
+    </record>
+  </filter>
+
+  <match docker.**>
+    @type s3
+
+    s3_bucket <%= ENV['S3_BUCKET'] %>
+    s3_region <%= ENV['S3_REGION'] %>
+
+    path logs/${tag[1]}_parquet/dt=%Y-%m-%d/hour=%H/
+    s3_object_key_format %{path}%{time_slice}_%{index}_%{hex_random}.%{file_extension}
+
+    <buffer tag,time>
+      @type file
+      path /fluentd/log/s3-parquet
+      timekey 1h
+      timekey_wait 5m
+      timekey_use_utc true
+
+      flush_mode interval
+      flush_interval 5m
+    </buffer>
+
+    <format>
+      @type msgpack
+    </format>
+
+    store_as parquet
+
+    <compress>
+      schema_type avro
+      schema_file /fluentd/avsc/docker_log.avsc
+      record_type msgpack
+      parquet_row_group_size 35651584
+    </compress>
+  </match>
+</label>
